@@ -1,0 +1,23 @@
+# Server Configuration
+PORT=10000
+NODE_ENV=production
+
+# MercadoPago Configuration
+MERCADOPAGO_ACCESS_TOKEN=TEST-tu_access_token_aqui
+MERCADOPAGO_PUBLIC_KEY=TEST-tu_public_key_aqui
+
+# Email Configuration (Gmail)
+EMAIL_SERVICE=gmail
+EMAIL_USER=tu_email@gmail.com
+EMAIL_PASS=tu_contraseña_de_aplicacion
+EMAIL_FROM=Sistema de Entradas <tu_email@gmail.com>
+
+# JWT Secret
+JWT_SECRET=mi_clave_secreta_muy_larga_y_segura
+
+# Database
+DATABASE_PATH=./database.sqlite
+
+# URLs de la aplicación
+FRONTEND_URL=https://tu-dominio-frontend.vercel.app
+BACKEND_URL=https://tu-app-backend.onrender.com

@@ -117,11 +117,11 @@ router.post('/create-preference', async (req, res) => {
     // Generar referencia única
     const externalReference = `TICKET-${event.id}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
-    // Crear preferencia de pago siguiendo documentación oficial
+    // Crear preferencia de pago usando API v2
     const preference = {
       items: [{
-        title: `🎫 ${eventData.name}`,
-        description: `${quantity} entrada${quantity > 1 ? 's' : ''} para ${eventData.name}`,
+        title: `🎫 ${event.name}`,
+        description: `${quantity} entrada${quantity > 1 ? 's' : ''} para ${event.name}`,
         unit_price: parseFloat(eventData.price || totalPrice),
         quantity: parseInt(quantity),
         currency_id: 'ARS'
@@ -133,22 +133,21 @@ router.post('/create-preference', async (req, res) => {
           number: attendees[0].phone || ''
         }
       },
-      // URLs de retorno según documentación oficial
       back_urls: {
-        success: `${process.env.CLIENT_URL}/success?ref=${externalReference}`,
-        failure: `${process.env.CLIENT_URL}/payment?error=payment_failed&ref=${externalReference}`,
-        pending: `${process.env.CLIENT_URL}/payment?status=pending&ref=${externalReference}`
+        success: `${process.env.CLIENT_URL || 'http://localhost:3000'}/success?ref=${externalReference}`,
+        failure: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?error=payment_failed`,
+        pending: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?status=pending`
       },
-      auto_return: 'approved', // Redirección automática cuando se aprueba el pago
+      auto_return: 'approved',
       external_reference: externalReference,
-      notification_url: `${process.env.SERVER_URL}/api/mercadopago/webhook`,
+      notification_url: `${process.env.SERVER_URL || 'http://localhost:5000'}/api/mercadopago/webhook`,
       statement_descriptor: 'ENTRADAS_EVENTO',
       expires: true,
       expiration_date_to: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 minutos
       metadata: {
-        event_id: eventData.id.toString(),
-        user_id: (userId || 'guest').toString(),
-        attendees_count: quantity.toString(),
+        event_id: event.id,
+        user_id: userId || 'guest',
+        attendees_count: quantity,
         attendees: JSON.stringify(attendees)
       }
     };
@@ -231,241 +230,39 @@ router.post('/create-preference', async (req, res) => {
   }
 });
 
-// Webhook de MercadoPago siguiendo documentación oficial
+// Webhook de MercadoPago
 router.post('/webhook', async (req, res) => {
   try {
-    console.log('🔔 MercadoPago webhook received');
-    console.log('📋 Headers:', req.headers);
-    console.log('📋 Query params:', req.query);
-    console.log('📋 Body:', req.body);
-
-    // Extraer información básica
-    const { action, type, data, live_mode } = req.body;
-    const paymentId = data?.id;
-
-    // Verificar si es una notificación válida
-    if (!type || !data?.id) {
-      console.error('❌ Invalid webhook: missing type or data.id');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid webhook format' 
-      });
-    }
-
-    console.log('📤 Processing webhook:', { 
-      action, 
-      type, 
-      paymentId, 
-      liveMode: live_mode 
-    });
-
-    // 1. MANEJAR NOTIFICACIONES DE PRUEBA
-    if (!live_mode && paymentId === '123456') {
-      console.log('🧪 Test webhook detected - responding OK without processing');
-      return res.status(200).json({ 
-        success: true,
-        message: 'Test webhook received successfully',
-        test_mode: true,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // 2. VALIDACIÓN DE ORIGEN para notificaciones reales
-    const xSignature = req.headers['x-signature'];
-    const xRequestId = req.headers['x-request-id'];
+    console.log('🔔 MercadoPago webhook received:', req.body);
+    const { type, data, action } = req.body;
     
-    // Solo validar firma en producción con notificaciones reales
-    if (live_mode && (!xSignature || !xRequestId)) {
-      console.error('❌ Missing required headers for production webhook');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing security headers for production webhook' 
-      });
-    }
-
-    // Validar firma solo si tenemos los headers necesarios
-    if (xSignature && xRequestId) {
-      const dataId = req.query['data.id'] || paymentId;
-      const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
-      
-      if (!isValidSignature) {
-        console.error('❌ Invalid webhook signature - possible fraud attempt');
-        return res.status(401).json({ 
-          success: false, 
-          error: 'Invalid signature' 
-        });
-      }
-      console.log('✅ Webhook signature validated successfully');
-    }
-
-    // 3. PROCESAR EVENTO DE PAGO
     if (type === 'payment') {
-      if (action === 'payment.updated' || action === 'payment.created') {
-        await processPaymentEvent(paymentId, live_mode);
+      const paymentId = data.id;
+      
+      // Obtener información completa del pago usando API v2
+      const paymentClient = new Payment(client);
+      const payment = await paymentClient.get({ id: paymentId });
+      
+      console.log('💳 Payment info:', {
+        id: payment.id,
+        status: payment.status,
+        externalReference: payment.external_reference,
+        amount: payment.transaction_amount
+      });
+      
+      if (payment.status === 'approved') {
+        await processApprovedPayment(payment);
+      } else if (payment.status === 'rejected') {
+        await processRejectedPayment(payment);
       }
     }
-
-    // 4. RESPONDER HTTP 200 según documentación
-    console.log('✅ Webhook processed successfully');
-    return res.status(200).json({ 
-      success: true,
-      message: 'Webhook received and processed',
-      live_mode: live_mode,
-      action: action,
-      type: type,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Error processing webhook:', error);
     
-    // Devolver 200 para evitar reintentos innecesarios en errores de procesamiento
-    return res.status(200).json({ 
-      success: false,
-      error: 'Error processing webhook',
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    res.status(500).send('Error');
   }
 });
-
-// Función para validar firma de webhook según documentación oficial
-async function validateWebhookSignature(xSignature, xRequestId, dataId) {
-  try {
-    // Extraer timestamp (ts) y hash (v1) del header x-signature
-    const parts = xSignature.split(',');
-    let ts = null;
-    let hash = null;
-
-    for (const part of parts) {
-      const [key, value] = part.split('=');
-      if (key.trim() === 'ts') {
-        ts = value.trim();
-      } else if (key.trim() === 'v1') {
-        hash = value.trim();
-      }
-    }
-
-    if (!ts || !hash) {
-      console.error('❌ Invalid x-signature format');
-      return false;
-    }
-
-    // Crear manifest string según documentación
-    // Template: id:[data.id_url];request-id:[x-request-id_header];ts:[ts_header];
-    const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
-    
-    console.log('🔐 Validating signature with manifest:', manifest);
-
-    // Generar HMAC SHA256 según documentación
-    const crypto = require('crypto');
-    const secretKey = process.env.MERCADOPAGO_WEBHOOK_SECRET || process.env.MERCADOPAGO_ACCESS_TOKEN;
-    
-    if (!secretKey) {
-      console.error('❌ Missing webhook secret key');
-      return false;
-    }
-
-    const expectedSignature = crypto
-      .createHmac('sha256', secretKey)
-      .update(manifest)
-      .digest('hex');
-
-    // Comparar firmas
-    const isValid = expectedSignature === hash;
-    
-    if (isValid) {
-      console.log('✅ Webhook signature validation passed');
-      
-      // Validar timestamp para evitar ataques de replay
-      const currentTimestamp = Date.now();
-      const webhookTimestamp = parseInt(ts);
-      const timeDifference = Math.abs(currentTimestamp - webhookTimestamp);
-      const tolerance = 5 * 60 * 1000; // 5 minutos
-
-      if (timeDifference > tolerance) {
-        console.warn('⚠️ Webhook timestamp is too old, possible replay attack');
-        return false;
-      }
-    } else {
-      console.error('❌ Webhook signature validation failed');
-      console.error('Expected:', expectedSignature);
-      console.error('Received:', hash);
-    }
-
-    return isValid;
-    
-  } catch (error) {
-    console.error('❌ Error validating webhook signature:', error);
-    return false;
-  }
-}
-
-// Función para procesar eventos de pago según documentación
-async function processPaymentEvent(paymentId, liveMode = false) {
-  try {
-    console.log(`� Processing payment event: ${paymentId} (live: ${liveMode})`);
-
-    // Para notificaciones de prueba, no procesamos pagos reales
-    if (!liveMode && paymentId === '123456') {
-      console.log('🧪 Skipping test payment processing');
-      return;
-    }
-
-    // Obtener información del pago desde MercadoPago
-    const payment = await mercadopago.payment.findById(paymentId);
-    
-    console.log('� Payment details:', {
-      id: payment.id,
-      status: payment.status,
-      status_detail: payment.status_detail,
-      transaction_amount: payment.transaction_amount,
-      external_reference: payment.external_reference,
-      payer_email: payment.payer?.email
-    });
-
-    // Solo procesar pagos con external_reference válido
-    if (!payment.external_reference) {
-      console.log('⚠️ Payment without external_reference - skipping database update');
-      return;
-    }
-
-    // Actualizar estado en base de datos
-    const updateResult = db.prepare(`
-      UPDATE tickets 
-      SET payment_status = ?, mercadopago_payment_id = ?, updated_at = ?
-      WHERE external_reference = ?
-    `).run(
-      payment.status, 
-      payment.id, 
-      new Date().toISOString(),
-      payment.external_reference
-    );
-
-    if (updateResult.changes > 0) {
-      console.log(`✅ Updated ${updateResult.changes} ticket(s) with payment status: ${payment.status}`);
-      
-      // Enviar email de confirmación si el pago fue aprobado
-      if (payment.status === 'approved' && payment.payer?.email) {
-        console.log(`📧 Sending confirmation email to: ${payment.payer.email}`);
-        // Aquí podríamos agregar lógica de envío de email
-      }
-    } else {
-      console.log(`⚠️ No tickets found with external_reference: ${payment.external_reference}`);
-    }
-
-  } catch (error) {
-    console.error('❌ Error processing payment event:', error);
-    
-    // Si el error es "Payment not found", es posible que sea una notificación de prueba
-    if (error.message?.includes('not found')) {
-      console.log('ℹ️ Payment not found - possibly a test notification');
-      return;
-    }
-    
-    throw error; // Re-throw para que el webhook handler pueda manejar el error
-  }
-}
 
 // Procesar pago aprobado
 async function processApprovedPayment(payment) {
@@ -589,8 +386,8 @@ async function processRejectedPayment(payment) {
     const db = getDatabase();
     
     await new Promise((resolve, reject) => {
-      db.run('UPDATE payment_preferences SET status = ?, rejection_reason = ? WHERE external_reference = ?',
-        ['rejected', payment.status_detail || 'Payment rejected', payment.external_reference], (err) => {
+      db.run('UPDATE payment_preferences SET status = ? WHERE external_reference = ?',
+        ['rejected', payment.external_reference], (err) => {
           if (err) reject(err);
           else resolve();
         });
@@ -599,34 +396,6 @@ async function processRejectedPayment(payment) {
     console.log('❌ Payment rejected:', payment.external_reference);
   } catch (error) {
     console.error('❌ Error processing rejected payment:', error);
-  }
-}
-
-// Procesar pago pendiente según documentación
-async function processPendingPayment(payment) {
-  try {
-    const db = getDatabase();
-    
-    await new Promise((resolve, reject) => {
-      db.run('UPDATE payment_preferences SET status = ?, payment_id = ?, pending_reason = ? WHERE external_reference = ?',
-        ['pending', payment.id, payment.status_detail || 'Payment pending', payment.external_reference], (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-    });
-    
-    console.log('⏳ Payment pending (offline payment method):', {
-      paymentId: payment.id,
-      externalReference: payment.external_reference,
-      paymentMethod: payment.payment_method_id,
-      statusDetail: payment.status_detail
-    });
-    
-    // Para medios de pago offline, el usuario debe ir a un punto de pago físico
-    // Aquí podrías enviar un email con instrucciones de cómo completar el pago
-    
-  } catch (error) {
-    console.error('❌ Error processing pending payment:', error);
   }
 }
 

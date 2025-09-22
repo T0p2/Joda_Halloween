@@ -239,91 +239,69 @@ router.post('/webhook', async (req, res) => {
     console.log('📋 Query params:', req.query);
     console.log('📋 Body:', req.body);
 
-    // Extraer información básica
-    const { action, type, data, live_mode } = req.body;
-    const paymentId = data?.id;
-
-    // Verificar si es una notificación válida
-    if (!type || !data?.id) {
-      console.error('❌ Invalid webhook: missing type or data.id');
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid webhook format' 
-      });
-    }
-
-    console.log('📤 Processing webhook:', { 
-      action, 
-      type, 
-      paymentId, 
-      liveMode: live_mode 
-    });
-
-    // 1. MANEJAR NOTIFICACIONES DE PRUEBA
-    if (!live_mode && paymentId === '123456') {
-      console.log('🧪 Test webhook detected - responding OK without processing');
-      return res.status(200).json({ 
-        success: true,
-        message: 'Test webhook received successfully',
-        test_mode: true,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // 2. VALIDACIÓN DE ORIGEN para notificaciones reales
+    // 1. VALIDACIÓN DE ORIGEN según documentación oficial
     const xSignature = req.headers['x-signature'];
     const xRequestId = req.headers['x-request-id'];
     
-    // Solo validar firma en producción con notificaciones reales
-    if (live_mode && (!xSignature || !xRequestId)) {
-      console.error('❌ Missing required headers for production webhook');
+    if (!xSignature || !xRequestId) {
+      console.error('❌ Missing required headers for webhook validation');
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing security headers for production webhook' 
+        error: 'Missing x-signature or x-request-id header' 
       });
     }
 
-    // Validar firma solo si tenemos los headers necesarios
-    if (xSignature && xRequestId) {
-      const dataId = req.query['data.id'] || paymentId;
-      const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
-      
-      if (!isValidSignature) {
-        console.error('❌ Invalid webhook signature - possible fraud attempt');
-        return res.status(401).json({ 
-          success: false, 
-          error: 'Invalid signature' 
-        });
-      }
-      console.log('✅ Webhook signature validated successfully');
+    // Extraer data.id de query params
+    const dataId = req.query['data.id'];
+    if (!dataId) {
+      console.error('❌ Missing data.id in query params');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing data.id parameter' 
+      });
     }
 
-    // 3. PROCESAR EVENTO DE PAGO
+    // Validar origen usando x-signature
+    const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
+    if (!isValidSignature) {
+      console.error('❌ Invalid webhook signature - possible fraud attempt');
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid signature' 
+      });
+    }
+
+    console.log('✅ Webhook signature validated successfully');
+
+    // 2. PROCESAR EVENTO según documentación
+    const { action, type, data } = req.body;
+    
+    console.log('📤 Processing event:', { action, type, paymentId: data.id });
+
     if (type === 'payment') {
+      // Manejar eventos de pago según documentación
       if (action === 'payment.updated' || action === 'payment.created') {
-        await processPaymentEvent(paymentId, live_mode);
+        await processPaymentEvent(data.id);
       }
     }
 
-    // 4. RESPONDER HTTP 200 según documentación
+    // 3. RESPONDER HTTP 200 según documentación
+    // "debes devolver un HTTP STATUS 200 (OK) o 201 (CREATED)"
     console.log('✅ Webhook processed successfully');
     return res.status(200).json({ 
       success: true,
       message: 'Webhook received and processed',
-      live_mode: live_mode,
-      action: action,
-      type: type,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
     console.error('❌ Error processing webhook:', error);
     
-    // Devolver 200 para evitar reintentos innecesarios en errores de procesamiento
+    // Devolver 200 incluso en error para evitar reintentos innecesarios
+    // según mejores prácticas de webhooks
     return res.status(200).json({ 
       success: false,
-      error: 'Error processing webhook',
-      message: error.message,
+      error: 'Internal error processing webhook',
       timestamp: new Date().toISOString()
     });
   }
@@ -402,68 +380,33 @@ async function validateWebhookSignature(xSignature, xRequestId, dataId) {
 }
 
 // Función para procesar eventos de pago según documentación
-async function processPaymentEvent(paymentId, liveMode = false) {
+async function processPaymentEvent(paymentId) {
   try {
-    console.log(`� Processing payment event: ${paymentId} (live: ${liveMode})`);
-
-    // Para notificaciones de prueba, no procesamos pagos reales
-    if (!liveMode && paymentId === '123456') {
-      console.log('🧪 Skipping test payment processing');
-      return;
-    }
-
-    // Obtener información del pago desde MercadoPago
-    const payment = await mercadopago.payment.findById(paymentId);
+    console.log('💳 Processing payment event for ID:', paymentId);
     
-    console.log('� Payment details:', {
+    // Obtener información completa del pago usando API v2
+    const paymentClient = new Payment(client);
+    const payment = await paymentClient.get({ id: paymentId });
+    
+    console.log('💳 Payment details:', {
       id: payment.id,
       status: payment.status,
       status_detail: payment.status_detail,
-      transaction_amount: payment.transaction_amount,
       external_reference: payment.external_reference,
-      payer_email: payment.payer?.email
+      transaction_amount: payment.transaction_amount
     });
-
-    // Solo procesar pagos con external_reference válido
-    if (!payment.external_reference) {
-      console.log('⚠️ Payment without external_reference - skipping database update');
-      return;
+    
+    if (payment.status === 'approved') {
+      await processApprovedPayment(payment);
+    } else if (payment.status === 'rejected') {
+      await processRejectedPayment(payment);
+    } else if (payment.status === 'pending') {
+      await processPendingPayment(payment);
     }
-
-    // Actualizar estado en base de datos
-    const updateResult = db.prepare(`
-      UPDATE tickets 
-      SET payment_status = ?, mercadopago_payment_id = ?, updated_at = ?
-      WHERE external_reference = ?
-    `).run(
-      payment.status, 
-      payment.id, 
-      new Date().toISOString(),
-      payment.external_reference
-    );
-
-    if (updateResult.changes > 0) {
-      console.log(`✅ Updated ${updateResult.changes} ticket(s) with payment status: ${payment.status}`);
-      
-      // Enviar email de confirmación si el pago fue aprobado
-      if (payment.status === 'approved' && payment.payer?.email) {
-        console.log(`📧 Sending confirmation email to: ${payment.payer.email}`);
-        // Aquí podríamos agregar lógica de envío de email
-      }
-    } else {
-      console.log(`⚠️ No tickets found with external_reference: ${payment.external_reference}`);
-    }
-
+    
   } catch (error) {
     console.error('❌ Error processing payment event:', error);
-    
-    // Si el error es "Payment not found", es posible que sea una notificación de prueba
-    if (error.message?.includes('not found')) {
-      console.log('ℹ️ Payment not found - possibly a test notification');
-      return;
-    }
-    
-    throw error; // Re-throw para que el webhook handler pueda manejar el error
+    throw error;
   }
 }
 

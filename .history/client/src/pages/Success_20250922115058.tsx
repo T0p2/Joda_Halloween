@@ -20,17 +20,17 @@ interface PaymentStatus {
 }
 
 interface MercadoPagoParams {
-  collection_id?: string | null;
-  collection_status?: string | null;
-  payment_id?: string | null;
-  status?: string | null;
-  external_reference?: string | null;
-  payment_type?: string | null;
-  merchant_order_id?: string | null;
-  preference_id?: string | null;
-  site_id?: string | null;
-  processing_mode?: string | null;
-  merchant_account_id?: string | null;
+  collection_id?: string;
+  collection_status?: string;
+  payment_id?: string;
+  status?: string;
+  external_reference?: string;
+  payment_type?: string;
+  merchant_order_id?: string;
+  preference_id?: string;
+  site_id?: string;
+  processing_mode?: string;
+  merchant_account_id?: string;
 }
 
 const Success: React.FC = () => {

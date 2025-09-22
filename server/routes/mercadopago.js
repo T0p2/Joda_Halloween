@@ -117,11 +117,11 @@ router.post('/create-preference', async (req, res) => {
     // Generar referencia única
     const externalReference = `TICKET-${event.id}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
-    // Crear preferencia de pago usando API v2
+    // Crear preferencia de pago siguiendo documentación oficial
     const preference = {
       items: [{
-        title: `🎫 ${event.name}`,
-        description: `${quantity} entrada${quantity > 1 ? 's' : ''} para ${event.name}`,
+        title: `🎫 ${eventData.name}`,
+        description: `${quantity} entrada${quantity > 1 ? 's' : ''} para ${eventData.name}`,
         unit_price: parseFloat(eventData.price || totalPrice),
         quantity: parseInt(quantity),
         currency_id: 'ARS'
@@ -133,21 +133,22 @@ router.post('/create-preference', async (req, res) => {
           number: attendees[0].phone || ''
         }
       },
+      // URLs de retorno según documentación oficial
       back_urls: {
-        success: `${process.env.CLIENT_URL || 'http://localhost:3000'}/success?ref=${externalReference}`,
-        failure: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?error=payment_failed`,
-        pending: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?status=pending`
+        success: `${process.env.CLIENT_URL}/success?ref=${externalReference}`,
+        failure: `${process.env.CLIENT_URL}/payment?error=payment_failed&ref=${externalReference}`,
+        pending: `${process.env.CLIENT_URL}/payment?status=pending&ref=${externalReference}`
       },
-      auto_return: 'approved',
+      auto_return: 'approved', // Redirección automática cuando se aprueba el pago
       external_reference: externalReference,
-      notification_url: `${process.env.SERVER_URL || 'http://localhost:5000'}/api/mercadopago/webhook`,
+      notification_url: `${process.env.SERVER_URL}/api/mercadopago/webhook`,
       statement_descriptor: 'ENTRADAS_EVENTO',
       expires: true,
       expiration_date_to: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 minutos
       metadata: {
-        event_id: event.id,
-        user_id: userId || 'guest',
-        attendees_count: quantity,
+        event_id: eventData.id.toString(),
+        user_id: (userId || 'guest').toString(),
+        attendees_count: quantity.toString(),
         attendees: JSON.stringify(attendees)
       }
     };
@@ -230,39 +231,184 @@ router.post('/create-preference', async (req, res) => {
   }
 });
 
-// Webhook de MercadoPago
+// Webhook de MercadoPago siguiendo documentación oficial
 router.post('/webhook', async (req, res) => {
   try {
-    console.log('🔔 MercadoPago webhook received:', req.body);
-    const { type, data, action } = req.body;
+    console.log('🔔 MercadoPago webhook received');
+    console.log('📋 Headers:', req.headers);
+    console.log('📋 Query params:', req.query);
+    console.log('📋 Body:', req.body);
+
+    // 1. VALIDACIÓN DE ORIGEN según documentación oficial
+    const xSignature = req.headers['x-signature'];
+    const xRequestId = req.headers['x-request-id'];
     
-    if (type === 'payment') {
-      const paymentId = data.id;
-      
-      // Obtener información completa del pago usando API v2
-      const paymentClient = new Payment(client);
-      const payment = await paymentClient.get({ id: paymentId });
-      
-      console.log('💳 Payment info:', {
-        id: payment.id,
-        status: payment.status,
-        externalReference: payment.external_reference,
-        amount: payment.transaction_amount
+    if (!xSignature || !xRequestId) {
+      console.error('❌ Missing required headers for webhook validation');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing x-signature or x-request-id header' 
       });
-      
-      if (payment.status === 'approved') {
-        await processApprovedPayment(payment);
-      } else if (payment.status === 'rejected') {
-        await processRejectedPayment(payment);
+    }
+
+    // Extraer data.id de query params
+    const dataId = req.query['data.id'];
+    if (!dataId) {
+      console.error('❌ Missing data.id in query params');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing data.id parameter' 
+      });
+    }
+
+    // Validar origen usando x-signature
+    const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
+    if (!isValidSignature) {
+      console.error('❌ Invalid webhook signature - possible fraud attempt');
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid signature' 
+      });
+    }
+
+    console.log('✅ Webhook signature validated successfully');
+
+    // 2. PROCESAR EVENTO según documentación
+    const { action, type, data } = req.body;
+    
+    console.log('📤 Processing event:', { action, type, paymentId: data.id });
+
+    if (type === 'payment') {
+      // Manejar eventos de pago según documentación
+      if (action === 'payment.updated' || action === 'payment.created') {
+        await processPaymentEvent(data.id);
       }
     }
-    
-    res.status(200).send('OK');
+
+    // 3. RESPONDER HTTP 200 según documentación
+    // "debes devolver un HTTP STATUS 200 (OK) o 201 (CREATED)"
+    console.log('✅ Webhook processed successfully');
+    return res.status(200).json({ 
+      success: true,
+      message: 'Webhook received and processed',
+      timestamp: new Date().toISOString()
+    });
+
   } catch (error) {
-    console.error('❌ Webhook error:', error);
-    res.status(500).send('Error');
+    console.error('❌ Error processing webhook:', error);
+    
+    // Devolver 200 incluso en error para evitar reintentos innecesarios
+    // según mejores prácticas de webhooks
+    return res.status(200).json({ 
+      success: false,
+      error: 'Internal error processing webhook',
+      timestamp: new Date().toISOString()
+    });
   }
 });
+
+// Función para validar firma de webhook según documentación oficial
+async function validateWebhookSignature(xSignature, xRequestId, dataId) {
+  try {
+    // Extraer timestamp (ts) y hash (v1) del header x-signature
+    const parts = xSignature.split(',');
+    let ts = null;
+    let hash = null;
+
+    for (const part of parts) {
+      const [key, value] = part.split('=');
+      if (key.trim() === 'ts') {
+        ts = value.trim();
+      } else if (key.trim() === 'v1') {
+        hash = value.trim();
+      }
+    }
+
+    if (!ts || !hash) {
+      console.error('❌ Invalid x-signature format');
+      return false;
+    }
+
+    // Crear manifest string según documentación
+    // Template: id:[data.id_url];request-id:[x-request-id_header];ts:[ts_header];
+    const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+    
+    console.log('🔐 Validating signature with manifest:', manifest);
+
+    // Generar HMAC SHA256 según documentación
+    const crypto = require('crypto');
+    const secretKey = process.env.MERCADOPAGO_WEBHOOK_SECRET || process.env.MERCADOPAGO_ACCESS_TOKEN;
+    
+    if (!secretKey) {
+      console.error('❌ Missing webhook secret key');
+      return false;
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', secretKey)
+      .update(manifest)
+      .digest('hex');
+
+    // Comparar firmas
+    const isValid = expectedSignature === hash;
+    
+    if (isValid) {
+      console.log('✅ Webhook signature validation passed');
+      
+      // Validar timestamp para evitar ataques de replay
+      const currentTimestamp = Date.now();
+      const webhookTimestamp = parseInt(ts);
+      const timeDifference = Math.abs(currentTimestamp - webhookTimestamp);
+      const tolerance = 5 * 60 * 1000; // 5 minutos
+
+      if (timeDifference > tolerance) {
+        console.warn('⚠️ Webhook timestamp is too old, possible replay attack');
+        return false;
+      }
+    } else {
+      console.error('❌ Webhook signature validation failed');
+      console.error('Expected:', expectedSignature);
+      console.error('Received:', hash);
+    }
+
+    return isValid;
+    
+  } catch (error) {
+    console.error('❌ Error validating webhook signature:', error);
+    return false;
+  }
+}
+
+// Función para procesar eventos de pago según documentación
+async function processPaymentEvent(paymentId) {
+  try {
+    console.log('💳 Processing payment event for ID:', paymentId);
+    
+    // Obtener información completa del pago usando API v2
+    const paymentClient = new Payment(client);
+    const payment = await paymentClient.get({ id: paymentId });
+    
+    console.log('💳 Payment details:', {
+      id: payment.id,
+      status: payment.status,
+      status_detail: payment.status_detail,
+      external_reference: payment.external_reference,
+      transaction_amount: payment.transaction_amount
+    });
+    
+    if (payment.status === 'approved') {
+      await processApprovedPayment(payment);
+    } else if (payment.status === 'rejected') {
+      await processRejectedPayment(payment);
+    } else if (payment.status === 'pending') {
+      await processPendingPayment(payment);
+    }
+    
+  } catch (error) {
+    console.error('❌ Error processing payment event:', error);
+    throw error;
+  }
+}
 
 // Procesar pago aprobado
 async function processApprovedPayment(payment) {
@@ -386,8 +532,8 @@ async function processRejectedPayment(payment) {
     const db = getDatabase();
     
     await new Promise((resolve, reject) => {
-      db.run('UPDATE payment_preferences SET status = ? WHERE external_reference = ?',
-        ['rejected', payment.external_reference], (err) => {
+      db.run('UPDATE payment_preferences SET status = ?, rejection_reason = ? WHERE external_reference = ?',
+        ['rejected', payment.status_detail || 'Payment rejected', payment.external_reference], (err) => {
           if (err) reject(err);
           else resolve();
         });
@@ -396,6 +542,34 @@ async function processRejectedPayment(payment) {
     console.log('❌ Payment rejected:', payment.external_reference);
   } catch (error) {
     console.error('❌ Error processing rejected payment:', error);
+  }
+}
+
+// Procesar pago pendiente según documentación
+async function processPendingPayment(payment) {
+  try {
+    const db = getDatabase();
+    
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE payment_preferences SET status = ?, payment_id = ?, pending_reason = ? WHERE external_reference = ?',
+        ['pending', payment.id, payment.status_detail || 'Payment pending', payment.external_reference], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+    });
+    
+    console.log('⏳ Payment pending (offline payment method):', {
+      paymentId: payment.id,
+      externalReference: payment.external_reference,
+      paymentMethod: payment.payment_method_id,
+      statusDetail: payment.status_detail
+    });
+    
+    // Para medios de pago offline, el usuario debe ir a un punto de pago físico
+    // Aquí podrías enviar un email con instrucciones de cómo completar el pago
+    
+  } catch (error) {
+    console.error('❌ Error processing pending payment:', error);
   }
 }
 

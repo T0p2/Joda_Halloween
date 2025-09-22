@@ -227,25 +227,25 @@ const BuyTicket = () => {
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 disabled:opacity-50 text-white font-bold py-3 sm:py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center transform hover:scale-105 text-sm sm:text-base"
+                  className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 disabled:opacity-50 text-black font-bold py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center"
                 >
                   {isLoading ? (
                     <>
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                      Procesando... 👻
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black mr-2"></div>
+                      Procesando...
                     </>
                   ) : (
                     <>
                       <CreditCard className="w-5 h-5 mr-2" />
-                      🎃 Continuar al Pago (${totalPrice.toFixed(2)})
+                      Continuar al Pago ({formatPrice(totalPrice)})
                     </>
                   )}
                 </button>
 
-                <div className="mt-6 text-xs sm:text-sm text-gray-300 text-center">
+                <div className="mt-6 text-sm text-gray-300">
                   <p>* Campos obligatorios</p>
                   <p className="mt-2">
-                    🦇 Al continuar, aceptas unirte a la fiesta más terrorífica del año.
+                    Al continuar, aceptas nuestros términos y condiciones de compra.
                   </p>
                 </div>
               </div>

@@ -150,7 +150,7 @@ const Payment: React.FC = () => {
         <div className="flex justify-start items-center mb-6">
           <button
             onClick={() => navigate(-1)}
-            className="flex items-center text-white hover:text-yellow-400 transition-colors duration-200 bg-black bg-opacity-30 px-4 py-2 rounded-lg backdrop-blur-sm"
+            className="flex items-center text-gray-600 hover:text-gray-900 transition-colors duration-200"
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
             Volver
@@ -160,9 +160,9 @@ const Payment: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Order Summary */}
           <div className="space-y-6">
-            <div className="bg-white bg-opacity-95 backdrop-blur-sm rounded-lg shadow-xl p-4 sm:p-6">
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">
-                🎃 Resumen del Pedido
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">
+                Resumen del Pedido
               </h2>
 
               <div className="space-y-4">
@@ -200,9 +200,9 @@ const Payment: React.FC = () => {
             </div>
 
             {/* Attendees List */}
-            <div className="bg-white bg-opacity-95 backdrop-blur-sm rounded-lg shadow-xl p-4 sm:p-6">
+            <div className="bg-white rounded-lg shadow-sm p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                👻 Datos de los Asistentes
+                Datos de los Asistentes
               </h3>
               <div className="space-y-4">
                 {attendees.map((attendee, index) => (
@@ -222,20 +222,20 @@ const Payment: React.FC = () => {
           </div>
 
           {/* Payment Form */}
-          <div className="bg-white bg-opacity-95 backdrop-blur-sm rounded-lg shadow-xl p-4 sm:p-6">
+          <div className="bg-white rounded-lg shadow-sm p-6">
             <div className="flex items-center mb-6">
-              <CreditCard className="w-6 h-6 text-orange-600 mr-2" />
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900">
-                💳 Finalizar Compra
+              <CreditCard className="w-6 h-6 text-blue-600 mr-2" />
+              <h2 className="text-2xl font-bold text-gray-900">
+                Finalizar Compra
               </h2>
             </div>
 
             <div className="space-y-6">
-              <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                <h4 className="font-medium text-orange-900 mb-2">
-                  🎊 Métodos de Pago Disponibles
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-medium text-blue-900 mb-2">
+                  Métodos de Pago Disponibles
                 </h4>
-                <ul className="text-sm text-orange-800 space-y-1">
+                <ul className="text-sm text-blue-800 space-y-1">
                   <li>• Tarjetas de crédito y débito</li>
                   <li>• Transferencia bancaria</li>
                   <li>• Pago en efectivo</li>
@@ -246,7 +246,7 @@ const Payment: React.FC = () => {
               <button
                 onClick={handlePayment}
                 disabled={loading}
-                className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 disabled:opacity-50 text-white font-bold py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center text-sm sm:text-base transform hover:scale-105"
+                className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center"
               >
                 {loading ? (
                   <>
@@ -256,15 +256,15 @@ const Payment: React.FC = () => {
                 ) : (
                   <>
                     <CreditCard className="w-5 h-5 mr-2" />
-                    🎃 Pagar {formatPrice(totalPrice)}
+                    Pagar con MercadoPago {formatPrice(totalPrice)}
                   </>
                 )}
               </button>
 
-              <div className="text-center text-xs sm:text-sm text-gray-600">
+              <div className="text-center text-sm text-gray-600">
                 <p>
                   Al completar tu compra, aceptas nuestros{' '}
-                  <a href="#" className="text-orange-600 hover:text-orange-500">
+                  <a href="#" className="text-blue-600 hover:text-blue-500">
                     términos y condiciones
                   </a>
                 </p>

@@ -148,56 +148,56 @@ const BuyTicket = () => {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Event Details */}
-          <div className="bg-white bg-opacity-10 backdrop-blur-sm rounded-xl p-4 sm:p-6 border border-orange-400 border-opacity-30">
-            <h2 className="text-xl sm:text-2xl font-bold text-white mb-4 flex items-center">
-              🎃 {event.name}
+          <div className="bg-white bg-opacity-10 backdrop-blur-sm rounded-lg p-6">
+            <h2 className="text-2xl font-bold text-white mb-4">
+              {event.name}
             </h2>
             
             <div className="space-y-4">
-              <div className="flex items-center text-gray-300 text-sm sm:text-base">
-                <Calendar className="w-5 h-5 mr-3 text-yellow-400 flex-shrink-0" />
+              <div className="flex items-center text-gray-300">
+                <Calendar className="w-5 h-5 mr-3 text-yellow-400" />
                 <span>{event.date} - {event.time}</span>
               </div>
               
-              <div className="flex items-center text-gray-300 text-sm sm:text-base">
-                <MapPin className="w-5 h-5 mr-3 text-yellow-400 flex-shrink-0" />
+              <div className="flex items-center text-gray-300">
+                <MapPin className="w-5 h-5 mr-3 text-yellow-400" />
                 <span>{event.location}</span>
               </div>
               
-              <div className="flex items-center text-gray-300 text-sm sm:text-base">
-                <Users className="w-5 h-5 mr-3 text-yellow-400 flex-shrink-0" />
-                <span>${event.price} por entrada</span>
-              </div>
+                             <div className="flex items-center text-gray-300">
+                 <Users className="w-5 h-5 mr-3 text-yellow-400" />
+                 <span>${event.price} por entrada</span>
+               </div>
             </div>
 
-            <div className="mt-6 p-4 bg-gradient-to-r from-orange-400 to-red-500 bg-opacity-20 rounded-lg border border-orange-400">
-              <div className="flex justify-between items-center text-white">
-                <span className="font-semibold text-sm sm:text-base">👻 Total a pagar:</span>
-                <span className="text-xl sm:text-2xl font-bold text-yellow-400">
-                  ${totalPrice.toFixed(2)}
-                </span>
-              </div>
+            <div className="mt-6 p-4 bg-yellow-400 bg-opacity-20 rounded-lg">
+                             <div className="flex justify-between items-center text-white">
+                 <span className="font-semibold">Total:</span>
+                 <span className="text-2xl font-bold text-yellow-400">
+                   ${totalPrice.toFixed(2)}
+                 </span>
+               </div>
             </div>
           </div>
 
           {/* Form */}
           <div className="space-y-6">
-            <div className="bg-white bg-opacity-10 backdrop-blur-sm rounded-xl p-4 sm:p-6 border border-purple-400 border-opacity-30">
-              <h3 className="text-lg sm:text-xl font-bold text-white mb-6 flex items-center">
-                🎫 Configuración de Entradas
+            <div className="bg-white bg-opacity-10 backdrop-blur-sm rounded-lg p-6">
+              <h3 className="text-xl font-bold text-white mb-6">
+                Configuración de Entradas
               </h3>
 
               <div>
-                <label className="block text-white font-medium mb-2 text-sm sm:text-base">
+                <label className="block text-white font-medium mb-2">
                   Cantidad de entradas
                 </label>
                 <select
                   name="quantity"
                   value={quantity}
                   onChange={handleQuantityChange}
-                  className="w-full px-3 sm:px-4 py-2 sm:py-3 rounded-lg bg-white bg-opacity-20 border border-white border-opacity-30 text-white focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent text-sm sm:text-base"
+                  className="w-full px-4 py-3 rounded-lg bg-white bg-opacity-20 border border-white border-opacity-30 text-white focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent"
                 >
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => (
                     <option key={num} value={num} className="bg-gray-800">
@@ -205,8 +205,8 @@ const BuyTicket = () => {
                     </option>
                   ))}
                 </select>
-                <p className="text-gray-300 text-xs sm:text-sm mt-2">
-                  Cada entrada debe tener los datos completos de una persona diferente 👤
+                <p className="text-gray-300 text-sm mt-2">
+                  Cada entrada debe tener los datos completos de una persona diferente
                 </p>
               </div>
             </div>
@@ -227,25 +227,25 @@ const BuyTicket = () => {
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 disabled:opacity-50 text-white font-bold py-3 sm:py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center transform hover:scale-105 text-sm sm:text-base"
+                  className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-500 hover:to-orange-600 disabled:opacity-50 text-black font-bold py-4 px-6 rounded-lg transition-all duration-300 flex items-center justify-center"
                 >
                   {isLoading ? (
                     <>
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                      Procesando... 👻
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black mr-2"></div>
+                      Procesando...
                     </>
                   ) : (
                     <>
                       <CreditCard className="w-5 h-5 mr-2" />
-                      🎃 Continuar al Pago (${totalPrice.toFixed(2)})
+                      Continuar al Pago ({formatPrice(totalPrice)})
                     </>
                   )}
                 </button>
 
-                <div className="mt-6 text-xs sm:text-sm text-gray-300 text-center">
+                <div className="mt-6 text-sm text-gray-300">
                   <p>* Campos obligatorios</p>
                   <p className="mt-2">
-                    🦇 Al continuar, aceptas unirte a la fiesta más terrorífica del año.
+                    Al continuar, aceptas nuestros términos y condiciones de compra.
                   </p>
                 </div>
               </div>

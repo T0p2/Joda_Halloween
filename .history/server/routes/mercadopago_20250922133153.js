@@ -331,9 +331,8 @@ router.post('/webhook', async (req, res) => {
     }
 
     // Verificar si tenemos datos suficientes para procesar
-    if (!paymentId) {
-      console.error('❌ Invalid webhook: no payment ID found');
-      console.log('Debug - req.body:', JSON.stringify(req.body, null, 2));
+    if (!paymentId && !isMerchantOrder) {
+      console.error('❌ Invalid webhook: missing payment ID or merchant order data');
       return res.status(400).json({ 
         success: false, 
         error: 'Invalid webhook format - no payment data found' 
@@ -360,38 +359,42 @@ router.post('/webhook', async (req, res) => {
       });
     }
 
-    // 2. VALIDACIÓN DE ORIGEN - RELAJADA para que no bloquee el procesamiento
+    // 2. VALIDACIÓN DE ORIGEN para notificaciones reales
     const xSignature = req.headers['x-signature'];
     const xRequestId = req.headers['x-request-id'];
     
-    // Solo validar firma como warning, no bloquear procesamiento
-    if (xSignature && xRequestId && live_mode) {
-      const dataId = req.query['data.id'] || req.body.id || paymentId;
-      try {
-        const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
-        
-        if (!isValidSignature) {
-          console.warn('⚠️ Webhook signature validation failed - pero continuamos procesamiento');
-        } else {
-          console.log('✅ Webhook signature validated successfully');
-        }
-      } catch (signatureError) {
-        console.warn('⚠️ Error validating signature:', signatureError.message);
-      }
+    // Solo validar firma en producción con notificaciones reales
+    if (live_mode && (!xSignature || !xRequestId)) {
+      console.error('❌ Missing required headers for production webhook');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing security headers for production webhook' 
+      });
     }
 
-    // 3. PROCESAR EVENTO DE PAGO - ARREGLADO
-    if (paymentId && (type === 'payment' || isMerchantOrder || isPayment)) {
-      console.log('🔄 Processing payment event:', paymentId);
-      try {
-        await processPaymentEvent(paymentId, live_mode);
-        console.log('✅ Payment processed successfully');
-      } catch (processError) {
-        console.error('❌ Error processing payment:', processError.message);
-        // No retornar error, solo loggear para debug
+    // Validar firma solo si tenemos los headers necesarios
+    if (xSignature && xRequestId) {
+      const dataId = req.query['data.id'] || paymentId;
+      const isValidSignature = await validateWebhookSignature(xSignature, xRequestId, dataId);
+      
+      if (!isValidSignature) {
+        console.error('❌ Invalid webhook signature - possible fraud attempt');
+        return res.status(401).json({ 
+          success: false, 
+          error: 'Invalid signature' 
+        });
       }
-    } else {
-      console.log('⚠️ No payment ID found to process, skipping payment processing');
+      console.log('✅ Webhook signature validated successfully');
+    }
+
+    // 3. PROCESAR EVENTO DE PAGO
+    if (type === 'payment' && paymentId) {
+      if (action === 'payment.updated' || action === 'payment.created') {
+        console.log('🔄 Processing payment event:', paymentId);
+        await processPaymentEvent(paymentId, live_mode);
+      }
+    } else if (isMerchantOrder) {
+      console.log('📋 Merchant order processed - waiting for payment notifications');
     }
 
     // 4. RESPONDER HTTP 200 según documentación
@@ -402,8 +405,6 @@ router.post('/webhook', async (req, res) => {
       live_mode: live_mode,
       action: action,
       type: type,
-      paymentId: paymentId,
-      processed: !!paymentId,
       timestamp: new Date().toISOString()
     });
 
@@ -503,9 +504,8 @@ async function processPaymentEvent(paymentId, liveMode = false) {
       return;
     }
 
-    // Obtener información del pago desde MercadoPago usando SDK v2
-    const paymentClient = new Payment(client);
-    const payment = await paymentClient.get({ id: paymentId });
+    // Obtener información del pago desde MercadoPago
+    const payment = await mercadopago.payment.findById(paymentId);
     
     console.log('� Payment details:', {
       id: payment.id,
@@ -523,7 +523,6 @@ async function processPaymentEvent(paymentId, liveMode = false) {
     }
 
     // Actualizar estado en base de datos
-    const db = getDatabase();
     const updateResult = db.prepare(`
       UPDATE tickets 
       SET payment_status = ?, mercadopago_payment_id = ?, updated_at = ?
@@ -541,23 +540,7 @@ async function processPaymentEvent(paymentId, liveMode = false) {
       // Enviar email de confirmación si el pago fue aprobado
       if (payment.status === 'approved' && payment.payer?.email) {
         console.log(`📧 Sending confirmation email to: ${payment.payer.email}`);
-        
-        // Obtener detalles del ticket para el email
-        const ticket = db.prepare(`
-          SELECT t.*, e.name as event_name, e.date as event_date, e.location 
-          FROM tickets t 
-          JOIN events e ON t.event_id = e.id 
-          WHERE t.external_reference = ?
-        `).get(payment.external_reference);
-
-        if (ticket) {
-          try {
-            await sendTicketConfirmationEmail(ticket, payment);
-            console.log('✅ Confirmation email sent successfully');
-          } catch (emailError) {
-            console.error('❌ Error sending email:', emailError.message);
-          }
-        }
+        // Aquí podríamos agregar lógica de envío de email
       }
     } else {
       console.log(`⚠️ No tickets found with external_reference: ${payment.external_reference}`);
@@ -959,63 +942,5 @@ const sendConfirmationEmail = async (tickets, event, preference) => {
     // No lanzamos el error para que no afecte el proceso de pago
   }
 };
-
-// Función para enviar email de confirmación de ticket
-async function sendTicketConfirmationEmail(ticket, payment) {
-  const nodemailer = require('nodemailer');
-  
-  const transporter = nodemailer.createTransporter({
-    service: process.env.EMAIL_SERVICE || 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
-  const mailOptions = {
-    from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-    to: ticket.attendee_email,
-    subject: `🎃 Entrada confirmada - ${ticket.event_name}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #ff6b35;">🎃 ¡Tu entrada está confirmada!</h1>
-        
-        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Detalles del Evento</h2>
-          <p><strong>Evento:</strong> ${ticket.event_name}</p>
-          <p><strong>Fecha:</strong> ${new Date(ticket.event_date).toLocaleDateString('es-AR')}</p>
-          <p><strong>Ubicación:</strong> ${ticket.location}</p>
-          <p><strong>Entrada #:</strong> ${ticket.ticket_code}</p>
-        </div>
-
-        <div style="background: #e8f5e8; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Información del Asistente</h2>
-          <p><strong>Nombre:</strong> ${ticket.attendee_name}</p>
-          <p><strong>DNI:</strong> ${ticket.attendee_dni}</p>
-          <p><strong>Email:</strong> ${ticket.attendee_email}</p>
-          <p><strong>Teléfono:</strong> ${ticket.attendee_phone}</p>
-        </div>
-
-        <div style="background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Detalles del Pago</h2>
-          <p><strong>Monto:</strong> $${payment.transaction_amount}</p>
-          <p><strong>Estado:</strong> ${payment.status === 'approved' ? 'Aprobado' : payment.status}</p>
-          <p><strong>ID de Pago:</strong> ${payment.id}</p>
-        </div>
-
-        <div style="text-align: center; margin: 30px 0;">
-          <p style="font-size: 18px; color: #ff6b35;"><strong>¡Nos vemos en la fiesta! 👻</strong></p>
-        </div>
-
-        <div style="text-align: center; font-size: 12px; color: #666; margin-top: 30px;">
-          <p>Guarda este email como comprobante de tu entrada</p>
-        </div>
-      </div>
-    `
-  };
-
-  await transporter.sendMail(mailOptions);
-  console.log('✅ Ticket confirmation email sent to:', ticket.attendee_email);
-}
 
 module.exports = router;

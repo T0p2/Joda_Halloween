@@ -541,23 +541,7 @@ async function processPaymentEvent(paymentId, liveMode = false) {
       // Enviar email de confirmación si el pago fue aprobado
       if (payment.status === 'approved' && payment.payer?.email) {
         console.log(`📧 Sending confirmation email to: ${payment.payer.email}`);
-        
-        // Obtener detalles del ticket para el email
-        const ticket = db.prepare(`
-          SELECT t.*, e.name as event_name, e.date as event_date, e.location 
-          FROM tickets t 
-          JOIN events e ON t.event_id = e.id 
-          WHERE t.external_reference = ?
-        `).get(payment.external_reference);
-
-        if (ticket) {
-          try {
-            await sendTicketConfirmationEmail(ticket, payment);
-            console.log('✅ Confirmation email sent successfully');
-          } catch (emailError) {
-            console.error('❌ Error sending email:', emailError.message);
-          }
-        }
+        // Aquí podríamos agregar lógica de envío de email
       }
     } else {
       console.log(`⚠️ No tickets found with external_reference: ${payment.external_reference}`);
@@ -959,63 +943,5 @@ const sendConfirmationEmail = async (tickets, event, preference) => {
     // No lanzamos el error para que no afecte el proceso de pago
   }
 };
-
-// Función para enviar email de confirmación de ticket
-async function sendTicketConfirmationEmail(ticket, payment) {
-  const nodemailer = require('nodemailer');
-  
-  const transporter = nodemailer.createTransporter({
-    service: process.env.EMAIL_SERVICE || 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
-  const mailOptions = {
-    from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-    to: ticket.attendee_email,
-    subject: `🎃 Entrada confirmada - ${ticket.event_name}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #ff6b35;">🎃 ¡Tu entrada está confirmada!</h1>
-        
-        <div style="background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Detalles del Evento</h2>
-          <p><strong>Evento:</strong> ${ticket.event_name}</p>
-          <p><strong>Fecha:</strong> ${new Date(ticket.event_date).toLocaleDateString('es-AR')}</p>
-          <p><strong>Ubicación:</strong> ${ticket.location}</p>
-          <p><strong>Entrada #:</strong> ${ticket.ticket_code}</p>
-        </div>
-
-        <div style="background: #e8f5e8; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Información del Asistente</h2>
-          <p><strong>Nombre:</strong> ${ticket.attendee_name}</p>
-          <p><strong>DNI:</strong> ${ticket.attendee_dni}</p>
-          <p><strong>Email:</strong> ${ticket.attendee_email}</p>
-          <p><strong>Teléfono:</strong> ${ticket.attendee_phone}</p>
-        </div>
-
-        <div style="background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0;">
-          <h2 style="color: #333;">Detalles del Pago</h2>
-          <p><strong>Monto:</strong> $${payment.transaction_amount}</p>
-          <p><strong>Estado:</strong> ${payment.status === 'approved' ? 'Aprobado' : payment.status}</p>
-          <p><strong>ID de Pago:</strong> ${payment.id}</p>
-        </div>
-
-        <div style="text-align: center; margin: 30px 0;">
-          <p style="font-size: 18px; color: #ff6b35;"><strong>¡Nos vemos en la fiesta! 👻</strong></p>
-        </div>
-
-        <div style="text-align: center; font-size: 12px; color: #666; margin-top: 30px;">
-          <p>Guarda este email como comprobante de tu entrada</p>
-        </div>
-      </div>
-    `
-  };
-
-  await transporter.sendMail(mailOptions);
-  console.log('✅ Ticket confirmation email sent to:', ticket.attendee_email);
-}
 
 module.exports = router;

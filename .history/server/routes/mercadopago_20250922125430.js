@@ -258,34 +258,9 @@ router.post('/webhook', async (req, res) => {
 
       // Consultar merchant_order para obtener pagos asociados
       try {
-        const https = require('https');
-        const url = new URL(resourceUrl);
-        
-        const moRes = await new Promise((resolve, reject) => {
-          const options = {
-            hostname: url.hostname,
-            path: url.pathname,
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
-              'Content-Type': 'application/json'
-            }
-          };
-
-          const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-              try {
-                resolve({ data: JSON.parse(data) });
-              } catch (e) {
-                reject(new Error('Invalid JSON response'));
-              }
-            });
-          });
-
-          req.on('error', reject);
-          req.end();
+        const axios = require('axios');
+        const moRes = await axios.get(resourceUrl, {
+          headers: { Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}` }
         });
         
         const merchantOrder = moRes.data;
@@ -387,13 +362,10 @@ router.post('/webhook', async (req, res) => {
     }
 
     // 3. PROCESAR EVENTO DE PAGO
-    if (type === 'payment' && paymentId) {
+    if (type === 'payment') {
       if (action === 'payment.updated' || action === 'payment.created') {
-        console.log('🔄 Processing payment event:', paymentId);
         await processPaymentEvent(paymentId, live_mode);
       }
-    } else if (isMerchantOrder) {
-      console.log('📋 Merchant order processed - waiting for payment notifications');
     }
 
     // 4. RESPONDER HTTP 200 según documentación

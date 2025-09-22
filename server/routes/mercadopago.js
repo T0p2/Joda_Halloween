@@ -1,5 +1,5 @@
 const express = require('express');
-const mercadopago = require('mercadopago');
+const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const { getDatabase } = require('../database/setup');
 const { v4: uuidv4 } = require('uuid');
 const QRCode = require('qrcode');
@@ -11,11 +11,21 @@ const publicKey = process.env.MERCADOPAGO_PUBLIC_KEY;
 
 if (!accessToken) {
   console.error('⚠️  MERCADOPAGO_ACCESS_TOKEN no está configurado en .env');
+  process.exit(1);
 }
 
-mercadopago.configure({
-  access_token: accessToken
+if (!publicKey) {
+  console.error('⚠️  MERCADOPAGO_PUBLIC_KEY no está configurado en .env');
+  process.exit(1);
+}
+
+// Inicializar cliente de MercadoPago v2
+const client = new MercadoPagoConfig({ 
+  accessToken: accessToken,
+  options: { timeout: 5000 }
 });
+
+console.log('✅ MercadoPago configurado correctamente');
 
 // Endpoint para obtener la public key
 router.get('/config', (req, res) => {
@@ -33,6 +43,7 @@ router.get('/test', async (req, res) => {
     res.json({
       success: true,
       message: 'MercadoPago configuration loaded',
+      version: 'v2 API',
       config: {
         hasAccessToken: !!accessToken,
         hasPublicKey: !!publicKey,
@@ -58,11 +69,11 @@ router.post('/create-preference', async (req, res) => {
     console.log('📋 Received payment request:', req.body);
     const { event, attendees, totalPrice, quantity, userId } = req.body;
 
-    // Validación de datos
+    // Validación de datos mejorada
     if (!event || !attendees || !totalPrice || !quantity) {
       return res.status(400).json({
         success: false,
-        error: 'Faltan datos requeridos: event, attendees, totalPrice, quantity'
+        error: 'Datos incompletos: event, attendees, totalPrice y quantity son requeridos'
       });
     }
 
@@ -80,43 +91,79 @@ router.post('/create-preference', async (req, res) => {
       });
     }
 
-    // Generar referencia única
-    const externalReference = `ticket_${Date.now()}_${uuidv4()}`;
+    // Verificar disponibilidad de entradas
+    const db = getDatabase();
+    const eventData = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM events WHERE id = ?', [event.id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
 
-    // Crear preferencia de pago
+    if (!eventData) {
+      return res.status(404).json({
+        success: false,
+        error: 'Evento no encontrado'
+      });
+    }
+
+    if (eventData.available_tickets < quantity) {
+      return res.status(400).json({
+        success: false,
+        error: `Solo hay ${eventData.available_tickets} entradas disponibles`
+      });
+    }
+
+    // Generar referencia única
+    const externalReference = `TICKET-${event.id}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+
+    // Crear preferencia de pago usando API v2
     const preference = {
       items: [{
-        title: `${event.name} - ${quantity} entrada${quantity > 1 ? 's' : ''}`,
-        description: `Evento: ${event.name} - Fecha: ${new Date(event.date).toLocaleDateString('es-ES')} - Ubicación: ${event.location}`,
-        unit_price: parseFloat(totalPrice),
-        quantity: 1,
+        title: `🎫 ${event.name}`,
+        description: `${quantity} entrada${quantity > 1 ? 's' : ''} para ${event.name}`,
+        unit_price: parseFloat(eventData.price || totalPrice),
+        quantity: parseInt(quantity),
         currency_id: 'ARS'
       }],
       payer: {
+        name: attendees[0].name,
         email: attendees[0].email,
-        name: attendees[0].name
+        phone: {
+          number: attendees[0].phone || ''
+        }
       },
       back_urls: {
         success: `${process.env.CLIENT_URL || 'http://localhost:3000'}/success?ref=${externalReference}`,
-        failure: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?error=failed`,
-        pending: `${process.env.CLIENT_URL || 'http://localhost:3000'}/success?ref=${externalReference}&status=pending`
+        failure: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?error=payment_failed`,
+        pending: `${process.env.CLIENT_URL || 'http://localhost:3000'}/payment?status=pending`
       },
+      auto_return: 'approved',
       external_reference: externalReference,
       notification_url: `${process.env.SERVER_URL || 'http://localhost:5000'}/api/mercadopago/webhook`,
+      statement_descriptor: 'ENTRADAS_EVENTO',
+      expires: true,
+      expiration_date_to: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 minutos
       metadata: {
         event_id: event.id,
         user_id: userId || 'guest',
-        quantity: quantity,
+        attendees_count: quantity,
         attendees: JSON.stringify(attendees)
       }
     };
 
-    console.log('🔧 Creating MercadoPago preference:', preference);
+    console.log('� Creating preference with v2 API:', {
+      eventName: event.name,
+      quantity,
+      totalPrice,
+      attendeesCount: attendees.length
+    });
 
-    // Usar la API v1 de mercadopago
-    const response = await mercadopago.preferences.create(preference);
+    // Usar la API v2 de MercadoPago
+    const preferenceClient = new Preference(client);
+    const response = await preferenceClient.create({ body: preference });
 
-    if (!response.body || !response.body.init_point) {
+    if (!response || !response.init_point) {
       console.error('❌ Error: Invalid response from MercadoPago:', response);
       return res.status(500).json({
         success: false,
@@ -126,47 +173,59 @@ router.post('/create-preference', async (req, res) => {
     }
 
     // Guardar en base de datos
-    const db = getDatabase();
-    
-    db.run(`
-      INSERT INTO payment_preferences 
-      (external_reference, preference_id, event_id, user_id, quantity, total_amount, attendees_data, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
-    `, [
-      externalReference,
-      response.body.id,
-      event.id,
-      userId || 'guest',
-      quantity,
-      totalPrice,
-      JSON.stringify(attendees)
-    ], function(err) {
-      if (err) {
-        console.error('❌ Error saving payment preference to database:', err);
-      } else {
-        console.log('✅ Payment preference saved to database with ID:', this.lastID);
-      }
+    await new Promise((resolve, reject) => {
+      db.run(`
+        INSERT OR REPLACE INTO payment_preferences 
+        (preference_id, external_reference, event_id, user_id, attendees_data, total_amount, quantity, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+      `, [
+        response.id,
+        externalReference,
+        event.id,
+        userId || 'guest',
+        JSON.stringify(attendees),
+        totalPrice,
+        quantity
+      ], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
     });
 
     console.log('✅ Payment preference created successfully:', {
-      id: response.body.id,
+      id: response.id,
       external_reference: externalReference,
-      init_point: response.body.init_point
+      init_point: response.init_point
     });
 
     res.json({
       success: true,
-      preferenceId: response.body.id,
-      initPoint: response.body.init_point,
-      externalReference: externalReference
+      preferenceId: response.id,
+      initPoint: response.init_point,
+      sandboxInitPoint: response.sandbox_init_point,
+      externalReference: externalReference,
+      publicKey: publicKey
     });
 
   } catch (error) {
     console.error('❌ Error creating MercadoPago preference:', error);
+    
+    let errorMessage = 'Error al crear la preferencia de pago';
+    let details = error.message;
+    
+    if (error.message.includes('invalid_token') || error.status === 401) {
+      errorMessage = 'Credenciales de MercadoPago inválidas';
+      details = 'Verifica que el MERCADOPAGO_ACCESS_TOKEN sea correcto';
+    } else if (error.message.includes('bad_request') || error.status === 400) {
+      errorMessage = 'Error en los datos de la preferencia';
+      details = 'Revisa que todos los datos estén correctos';
+    }
+    
     res.status(500).json({
       success: false,
-      error: 'Error interno del servidor',
-      details: error.message
+      error: errorMessage,
+      details: details,
+      debug: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -175,137 +234,201 @@ router.post('/create-preference', async (req, res) => {
 router.post('/webhook', async (req, res) => {
   try {
     console.log('🔔 MercadoPago webhook received:', req.body);
-
-    const { type, data } = req.body;
-
+    const { type, data, action } = req.body;
+    
     if (type === 'payment') {
       const paymentId = data.id;
       
-      // Obtener información del pago usando API v1
-      const payment = await mercadopago.payment.findById(paymentId);
-
-      console.log('💳 Payment details:', payment.body);
-
-      if (payment.body.status === 'approved') {
-        const externalReference = payment.body.external_reference;
-        
-        const db = getDatabase();
-        
-        // Actualizar estado en base de datos
-        db.run(`
-          UPDATE payment_preferences 
-          SET status = 'completed', payment_id = ?
-          WHERE external_reference = ?
-        `, ['completed', paymentId], function(err) {
-          if (err) {
-            console.error('Error updating payment preference:', err);
-            return;
-          }
-        });
-
-        // Obtener datos de la preferencia
-        db.get(`
-          SELECT * FROM payment_preferences WHERE external_reference = ?
-        `, [externalReference], async (err, preference) => {
-          if (err || !preference) {
-            console.error('Error getting preference:', err);
-            return;
-          }
-
-          try {
-            const attendees = JSON.parse(preference.attendees_data);
-            const eventId = preference.event_id;
-            const userId = preference.user_id;
-
-            // Obtener información del evento
-            db.get('SELECT * FROM events WHERE id = ?', [eventId], async (err, event) => {
-              if (err || !event) {
-                console.error('Error getting event:', err);
-                return;
-              }
-
-              // Crear entradas para cada asistente
-              const ticketPromises = attendees.map(async (attendee) => {
-                const ticketCode = uuidv4();
-                const qrData = JSON.stringify({
-                  ticketCode: ticketCode,
-                  eventName: event.name,
-                  eventDate: event.date,
-                  eventLocation: event.location,
-                  attendeeName: attendee.name
-                });
-
-                const qrCode = await QRCode.toDataURL(qrData);
-
-                return new Promise((resolve, reject) => {
-                  db.run(`
-                    INSERT INTO tickets (
-                      ticket_code, user_id, event_id, qr_code, status, 
-                      payment_intent_id, amount_paid, attendee_name, 
-                      attendee_email, attendee_dni, attendee_phone
-                    ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
-                  `, [
-                    ticketCode,
-                    userId,
-                    eventId,
-                    qrCode,
-                    paymentId,
-                    preference.total_amount / preference.quantity,
-                    attendee.name,
-                    attendee.email,
-                    attendee.dni,
-                    attendee.phone
-                  ], function(err) {
-                    if (err) {
-                      reject(err);
-                    } else {
-                      resolve({
-                        ticketId: this.lastID,
-                        ticket_code: ticketCode,
-                        attendee_name: attendee.name,
-                        attendee_email: attendee.email,
-                        attendee_dni: attendee.dni,
-                        attendee_phone: attendee.phone,
-                        qr_code: qrCode
-                      });
-                    }
-                  });
-                });
-              });
-
-              try {
-                const createdTickets = await Promise.all(ticketPromises);
-                console.log('🎫 Tickets created successfully for payment:', paymentId);
-
-                // Enviar email de confirmación
-                await sendConfirmationEmail(createdTickets, event, preference);
-                
-                // Actualizar cantidad de entradas disponibles
-                db.run(`
-                  UPDATE events 
-                  SET available_tickets = available_tickets - ? 
-                  WHERE id = ?
-                `, [preference.quantity, eventId]);
-
-              } catch (ticketError) {
-                console.error('Error creating tickets:', ticketError);
-              }
-            });
-          } catch (parseError) {
-            console.error('Error parsing attendees data:', parseError);
-          }
-        });
+      // Obtener información completa del pago usando API v2
+      const paymentClient = new Payment(client);
+      const payment = await paymentClient.get({ id: paymentId });
+      
+      console.log('💳 Payment info:', {
+        id: payment.id,
+        status: payment.status,
+        externalReference: payment.external_reference,
+        amount: payment.transaction_amount
+      });
+      
+      if (payment.status === 'approved') {
+        await processApprovedPayment(payment);
+      } else if (payment.status === 'rejected') {
+        await processRejectedPayment(payment);
       }
     }
-
-    res.status(200).json({ success: true });
+    
+    res.status(200).send('OK');
   } catch (error) {
-    console.error('❌ Error processing webhook:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Webhook error:', error);
+    res.status(500).send('Error');
   }
 });
 
-// Consultar estado de pago
+// Procesar pago aprobado
+async function processApprovedPayment(payment) {
+  try {
+    const db = getDatabase();
+    const externalReference = payment.external_reference;
+    
+    // Buscar la preferencia
+    const preference = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM payment_preferences WHERE external_reference = ?', 
+        [externalReference], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+    });
+    
+    if (!preference) {
+      console.error('❌ Preference not found for reference:', externalReference);
+      return;
+    }
+    
+    const attendees = JSON.parse(preference.attendees_data);
+    
+    // Obtener información del evento
+    const event = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM events WHERE id = ?', [preference.event_id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+    
+    if (!event) {
+      console.error('❌ Event not found for ID:', preference.event_id);
+      return;
+    }
+    
+    // Crear entradas para cada asistente
+    const ticketPromises = attendees.map(async (attendee) => {
+      const ticketCode = uuidv4();
+      const qrData = JSON.stringify({
+        ticketCode,
+        eventId: preference.event_id,
+        eventName: event.name,
+        eventDate: event.date,
+        eventLocation: event.location,
+        attendeeName: attendee.name,
+        paymentId: payment.id
+      });
+      
+      const qrCodeData = await QRCode.toDataURL(qrData);
+      
+      return new Promise((resolve, reject) => {
+        db.run(`
+          INSERT INTO tickets 
+          (ticket_code, user_id, event_id, qr_code, status, payment_intent_id, amount_paid, 
+           attendee_name, attendee_email, attendee_dni, attendee_phone, created_at)
+          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, datetime('now'))
+        `, [
+          ticketCode,
+          preference.user_id,
+          preference.event_id,
+          qrCodeData,
+          payment.id,
+          payment.transaction_amount / attendees.length,
+          attendee.name,
+          attendee.email,
+          attendee.dni,
+          attendee.phone
+        ], function(err) {
+          if (err) reject(err);
+          else resolve({
+            ticketId: this.lastID,
+            ticket_code: ticketCode,
+            attendee_name: attendee.name,
+            attendee_email: attendee.email,
+            attendee_dni: attendee.dni,
+            attendee_phone: attendee.phone,
+            qr_code: qrCodeData
+          });
+        });
+      });
+    });
+    
+    const createdTickets = await Promise.all(ticketPromises);
+    
+    // Actualizar entradas disponibles del evento
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE events SET available_tickets = available_tickets - ? WHERE id = ?',
+        [attendees.length, preference.event_id], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+    });
+    
+    // Actualizar estado de la preferencia
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE payment_preferences SET status = ?, payment_id = ? WHERE external_reference = ?',
+        ['completed', payment.id, externalReference], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+    });
+    
+    // Enviar email de confirmación
+    await sendConfirmationEmail(createdTickets, event, preference);
+    
+    console.log('✅ Payment processed successfully:', {
+      paymentId: payment.id,
+      ticketsCreated: createdTickets.length,
+      externalReference
+    });
+    
+  } catch (error) {
+    console.error('❌ Error processing approved payment:', error);
+  }
+}
+
+// Procesar pago rechazado
+async function processRejectedPayment(payment) {
+  try {
+    const db = getDatabase();
+    
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE payment_preferences SET status = ? WHERE external_reference = ?',
+        ['rejected', payment.external_reference], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+    });
+    
+    console.log('❌ Payment rejected:', payment.external_reference);
+  } catch (error) {
+    console.error('❌ Error processing rejected payment:', error);
+  }
+}
+
+// Obtener información de pago
+router.get('/payment/:paymentId', async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const paymentClient = new Payment(client);
+    const payment = await paymentClient.get({ id: paymentId });
+    
+    res.json({
+      success: true,
+      payment: {
+        id: payment.id,
+        status: payment.status,
+        status_detail: payment.status_detail,
+        external_reference: payment.external_reference,
+        transaction_amount: payment.transaction_amount,
+        date_created: payment.date_created,
+        payer: payment.payer
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting payment:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error al obtener información del pago'
+    });
+  }
+});
+
+// Consultar estado de pago por referencia externa
 router.get('/payment-status/:reference', async (req, res) => {
   try {
     const { reference } = req.params;
@@ -313,52 +436,53 @@ router.get('/payment-status/:reference', async (req, res) => {
 
     const db = getDatabase();
     
-    db.get(`
-      SELECT * FROM payment_preferences WHERE external_reference = ?
-    `, [reference], async (err, preference) => {
-      if (err) {
-        console.error('Error querying payment preference:', err);
-        return res.status(500).json({
-          success: false,
-          error: 'Error interno del servidor'
+    const preference = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM payment_preferences WHERE external_reference = ?', 
+        [reference], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
         });
-      }
-
-      if (!preference) {
-        return res.status(404).json({
-          success: false,
-          error: 'Referencia de pago no encontrada'
-        });
-      }
-
-      let paymentData = null;
-      if (preference.payment_id) {
-        try {
-          const payment = await mercadopago.payment.findById(preference.payment_id);
-          paymentData = payment.body;
-        } catch (error) {
-          console.error('Error fetching payment from MercadoPago:', error);
-        }
-      }
-
-      res.json({
-        success: true,
-        preference: {
-          status: preference.status,
-          external_reference: preference.external_reference,
-          total_amount: preference.total_amount,
-          created_at: preference.created_at
-        },
-        payment: paymentData
-      });
     });
-
+    
+    if (!preference) {
+      return res.status(404).json({
+        success: false,
+        error: 'Referencia de pago no encontrada'
+      });
+    }
+    
+    // Si hay un payment_id, obtener información actualizada
+    let paymentInfo = null;
+    if (preference.payment_id) {
+      try {
+        const paymentClient = new Payment(client);
+        const payment = await paymentClient.get({ id: preference.payment_id });
+        paymentInfo = {
+          status: payment.status,
+          status_detail: payment.status_detail,
+          transaction_amount: payment.transaction_amount
+        };
+      } catch (err) {
+        console.error('Error getting payment info:', err);
+      }
+    }
+    
+    res.json({
+      success: true,
+      preference: {
+        status: preference.status,
+        external_reference: preference.external_reference,
+        total_amount: preference.total_amount,
+        created_at: preference.created_at
+      },
+      payment: paymentInfo
+    });
+    
   } catch (error) {
-    console.error('❌ Error checking payment status:', error);
+    console.error('Error checking payment status:', error);
     res.status(500).json({
       success: false,
-      error: 'Error interno del servidor',
-      details: error.message
+      error: 'Error al verificar el estado del pago'
     });
   }
 });
